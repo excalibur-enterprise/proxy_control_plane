@@ -1,8 +1,8 @@
 name: release-pages
 
 # Publishes pages/ and bundles/ to the gh-pages branch on every push
-# to main. Pages are served at https://excalibur.dev (CNAME ->
-# <org>.github.io) and https://entitlements.excalibur.dev (same site,
+# to main. Pages are served at https://excalibur-enterprise.github.io/proxy_control_plane (CNAME ->
+# <org>.github.io) and https://excalibur-enterprise.github.io/proxy_control_plane (same site,
 # different subdomain mapping).
 
 on:

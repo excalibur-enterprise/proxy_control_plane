@@ -33,7 +33,7 @@
 <body>
 <h1>Finalize your Excalibur subscription <span id="cloud-badge" class="badge">…</span></h1>
 
-<p id="intro">Click the button below to complete your purchase. We will redeem the marketplace token, sign your license bundle with our offline operational key, and publish it to <code>https://excalibur.dev/</code> within a few minutes.</p>
+<p id="intro">Click the button below to complete your purchase. We will redeem the marketplace token, sign your license bundle with our offline operational key, and publish it to this GitHub Pages site within a few minutes.</p>
 
 <button id="go" disabled>Activate subscription</button>
 <div id="status"></div>
@@ -48,11 +48,10 @@
 
 <h2>What happens next</h2>
 <ol>
-  <li>This page hands your one-time marketplace token to a public GitHub Actions fulfillment workflow in
-    <a href="https://github.com/excalibur-enterprise/proxy_control_plane">excalibur-enterprise/proxy_control_plane</a>.</li>
-  <li>The workflow calls your marketplace's own resolution API (AWS Marketplace Metering <code>ResolveCustomer</code>, or Azure SaaS Fulfillment v2) to confirm the purchase.</li>
-  <li>It signs a license bundle with our offline operational key (held only in a manual-reviewer-gated GitHub Environment) and commits the bundle as a public file in the same repo.</li>
-  <li>The bundle is served from <code>https://excalibur.dev/</code> within seconds. Your proxy auto-fetches it on its next refresh cycle.</li>
+  <li>This page hands your one-time marketplace token to our fulfillment pipeline.</li>
+  <li>The pipeline calls your marketplace's own resolution API (AWS Marketplace Metering <code>ResolveCustomer</code>, or Azure SaaS Fulfillment v2) to confirm the purchase.</li>
+  <li>It signs a license bundle with our offline operational key (held only in a manual-reviewer-gated GitHub Environment) and commits the signed bundle as a public file into <a href="https://github.com/excalibur-enterprise/proxy_control_plane">excalibur-enterprise/proxy_control_plane</a>.</li>
+  <li>The bundle is served from this GitHub Pages site within seconds. Your proxy auto-fetches it on its next refresh cycle.</li>
 </ol>
 
 <p>You can verify the resulting bundle locally with:</p>
