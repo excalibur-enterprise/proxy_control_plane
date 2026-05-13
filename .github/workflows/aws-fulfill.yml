@@ -1,0 +1,131 @@
+name: aws-fulfill
+
+# Triggered by the public landing page (pages/aws-landing.html) when an
+# AWS customer requests a license bundle for their AWS account. Unlike
+# the Azure SaaS flow there is no one-time token — AWS Marketplace
+# Container products entitle by `CustomerIdentifier` (the buyer's AWS
+# account / Marketplace customer ID) plus `ProductCode`. The landing
+# page submits both as the repository_dispatch payload after the
+# customer signs in with AWS and confirms ownership.
+#
+# Security posture (mirrors azure-fulfill.yml):
+#   - `signing` environment requires a manual reviewer for every run.
+#   - The operational private key is a GitHub Encrypted Secret named
+#     OPS_PRIV_KEY_B64 (raw 64-byte ed25519 key, base64-std). Shared
+#     with the Azure path — one signing key per control plane.
+#   - AWS auth is GitHub OIDC -> IAM role via
+#     aws-actions/configure-aws-credentials@v4. **No long-lived AWS
+#     keys in GitHub secrets** — only the seller-account role ARN
+#     and external ID.
+#   - The job runs on `ubuntu-latest` with `permissions: contents:
+#     write` + `id-token: write` (the latter for AWS OIDC), both
+#     scoped to this single workflow.
+#   - We pin every action to a SHA, never a tag.
+
+on:
+  repository_dispatch:
+    types: [aws-fulfill]
+  workflow_dispatch:
+    inputs:
+      customer_id:
+        description: "AWS Marketplace CustomerIdentifier"
+        required: true
+      product_code:
+        description: "AWS Marketplace ProductCode"
+        required: true
+      region:
+        description: "AWS region for the entitlement-service endpoint"
+        required: false
+        default: "us-east-1"
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: aws-fulfill-${{ github.event.client_payload.customer_id || inputs.customer_id }}
+  cancel-in-progress: false
+
+jobs:
+  fulfill-and-sign:
+    runs-on: ubuntu-latest
+    environment: signing
+    timeout-minutes: 5
+    steps:
+      - name: Checkout control-plane
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Checkout proxy (for cmd/fulfill-aws)
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          repository: excalibur-enterprise/proxy
+          path: proxy
+          ref: main
+
+      - name: Set up Go
+        uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7 # v5.0.1
+        with:
+          go-version-file: proxy/go.mod
+          cache-dependency-path: proxy/go.sum
+
+      - name: Configure AWS credentials (GitHub OIDC -> IAM role)
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ secrets.AWS_FULFILL_ROLE_ARN }}
+          role-session-name: aws-fulfill-${{ github.run_id }}
+          aws-region: ${{ github.event.client_payload.region || inputs.region || 'us-east-1' }}
+          mask-aws-account-id: true
+
+      - name: Build fulfill-aws
+        working-directory: proxy
+        run: go build -o ../fulfill-aws ./cmd/fulfill-aws
+
+      - name: Materialize signing material
+        env:
+          OPS_PRIV_KEY_B64: ${{ secrets.OPS_PRIV_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$OPS_PRIV_KEY_B64" > op.priv
+          cp pages/signing-keys/operational-cert.json op.cert.json
+          jq -r '.token' op.cert.json > op.cert
+          test -s op.cert
+
+      - name: Resolve entitlement, sign bundle
+        id: sign
+        env:
+          CUSTOMER_ID: ${{ github.event.client_payload.customer_id || inputs.customer_id }}
+          PRODUCT_CODE: ${{ github.event.client_payload.product_code || inputs.product_code }}
+          REGION: ${{ github.event.client_payload.region || inputs.region || 'us-east-1' }}
+        run: |
+          set -euo pipefail
+          ./fulfill-aws \
+            --customer-id "$CUSTOMER_ID" \
+            --product-code "$PRODUCT_CODE" \
+            --region "$REGION" \
+            --op-priv op.priv \
+            --op-cert op.cert \
+            --plans proxy/deploy/aws/marketplace/plans-aws.json \
+            --validity-days 90 \
+            --grace-days 14 \
+            --out bundle.json
+          SUB=$(jq -r '.license' bundle.json | cut -d. -f1 | base64 -d 2>/dev/null | jq -r .sub)
+          test -n "$SUB" && test "$SUB" != "null"
+          echo "sub=$SUB" >> "$GITHUB_OUTPUT"
+          mkdir -p entitlements/aws
+          mv bundle.json "entitlements/aws/${SUB}.json"
+
+      - name: Wipe signing material
+        if: always()
+        run: shred -u op.priv op.cert op.cert.json 2>/dev/null || rm -f op.priv op.cert op.cert.json
+
+      - name: Commit and push
+        env:
+          SUB: ${{ steps.sign.outputs.sub }}
+        run: |
+          set -euo pipefail
+          git config user.name  "excalibur-fulfillment[bot]"
+          git config user.email "fulfillment@excalibur.dev"
+          git add "entitlements/aws/${SUB}.json"
+          git commit -m "fulfill: issue aws license for ${SUB}"
+          git push

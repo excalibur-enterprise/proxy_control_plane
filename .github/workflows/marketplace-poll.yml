@@ -1,0 +1,111 @@
+name: marketplace-poll
+
+# Every 5 minutes, diff the marketplace's authoritative subscription
+# list against the bundles we have committed. Reissue licenses whose
+# Exp is within 7 days; suspend (delete bundle) any subscription the
+# marketplace now reports as Unsubscribed / Suspended.
+#
+# All signing happens via cmd/fulfill-azure under the same `signing`
+# environment as azure-fulfill.yml. This workflow only enumerates +
+# decides; the signing step is delegated.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: marketplace-poll
+  cancel-in-progress: true
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    environment: signing
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Checkout proxy
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          repository: excalibur-enterprise/proxy
+          path: proxy
+          ref: main
+
+      - name: Set up Go
+        uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7 # v5.0.1
+        with:
+          go-version-file: proxy/go.mod
+          cache-dependency-path: proxy/go.sum
+
+      - name: Fetch current marketplace subscriptions
+        env:
+          MARKETPLACE_BEARER: ${{ secrets.MARKETPLACE_BEARER }}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            -H "Authorization: Bearer $MARKETPLACE_BEARER" \
+            "https://marketplaceapi.microsoft.com/api/saas/subscriptions?api-version=2018-08-31" \
+            -o subscriptions.json
+          jq -e '.subscriptions | length >= 0' subscriptions.json > /dev/null
+
+      - name: Reconcile bundles
+        env:
+          OPS_PRIV_KEY_B64: ${{ secrets.OPS_PRIV_KEY_B64 }}
+          MARKETPLACE_BEARER: ${{ secrets.MARKETPLACE_BEARER }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$OPS_PRIV_KEY_B64" > op.priv
+          jq -r '.token' pages/signing-keys/operational-cert.json > op.cert
+
+          # Build fulfill-azure once.
+          (cd proxy && go build -o ../fulfill-azure ./cmd/fulfill-azure)
+
+          # 1. Suspended subs: remove their bundle.
+          jq -r '.subscriptions[] | select(.saasSubscriptionStatus != "Subscribed") | .id' \
+            subscriptions.json | while read -r sub; do
+              if [[ -f "bundles/${sub}.json" ]]; then
+                echo "[poll] suspending ${sub}"
+                git rm "bundles/${sub}.json"
+              fi
+            done
+
+          # 2. Active subs whose Exp is within 7 days: reissue.
+          NOW=$(date -u +%s)
+          CUTOFF=$((NOW + 7*24*3600))
+          jq -r '.subscriptions[] | select(.saasSubscriptionStatus == "Subscribed") | .id' \
+            subscriptions.json | while read -r sub; do
+              path="bundles/${sub}.json"
+              if [[ ! -f "$path" ]]; then continue; fi
+              EXP=$(jq -r '.license' "$path" | cut -d. -f1 | base64 -d 2>/dev/null | jq -r .exp)
+              if [[ "$EXP" -gt "$CUTOFF" ]]; then continue; fi
+              echo "[poll] reissuing ${sub} (exp=$EXP, cutoff=$CUTOFF)"
+              ./fulfill-azure \
+                --token "$MARKETPLACE_BEARER" \
+                --op-priv op.priv --op-cert op.cert \
+                --plans proxy/deploy/azure/marketplace/plans.json \
+                --skip-activate \
+                --validity-days 90 --grace-days 14 \
+                --out "$path"
+            done
+
+          shred -u op.priv op.cert 2>/dev/null || rm -f op.priv op.cert
+
+      - name: Commit changes (if any)
+        run: |
+          set -euo pipefail
+          if git diff --cached --quiet && git diff --quiet; then
+            echo "[poll] no changes"
+            exit 0
+          fi
+          git config user.name  "excalibur-fulfillment[bot]"
+          git config user.email "fulfillment@excalibur.dev"
+          git add -A bundles/
+          git commit -m "poll: reconcile bundles vs marketplace state"
+          git push

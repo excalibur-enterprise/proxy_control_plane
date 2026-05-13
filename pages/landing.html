@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Excalibur Proxy — finalize your purchase</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;max-width:680px;margin:48px auto;padding:0 16px;color:#111;line-height:1.55}
+  h1{font-size:28px}
+  code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#f3f3f3;padding:1px 4px;border-radius:3px}
+  pre{padding:12px;overflow-x:auto}
+  #status{padding:14px;border-radius:6px;margin:20px 0}
+  .ok{background:#e6f7e9;color:#0a5e1e}
+  .pending{background:#fff7e0;color:#8a5b00}
+  .err{background:#fde8e8;color:#9b1c1c}
+  button{background:#0b69ff;color:#fff;border:0;padding:10px 18px;border-radius:6px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.5;cursor:not-allowed}
+</style>
+</head>
+<body>
+<h1>Finalize your Excalibur subscription</h1>
+<p>Click the button below to complete your purchase. We will redeem the
+marketplace token, sign a license bundle, and email you a download link
+within ~5 minutes.</p>
+
+<button id="go" disabled>Activate subscription</button>
+<div id="status"></div>
+
+<h2>What happens next</h2>
+<ol>
+  <li>This page sends your one-time marketplace token to our GitHub Actions
+      fulfillment workflow via <code>repository_dispatch</code>.</li>
+  <li>The workflow calls Microsoft's SaaS Fulfillment v2 API to resolve and
+      activate your subscription.</li>
+  <li>It signs a license bundle with our offline operational key and
+      commits it to the public <code>excalibur-enterprise/proxy_control_plane</code> repo
+      under <code>bundles/&lt;opaque-id&gt;.json</code>.</li>
+  <li>Our static entitlements endpoint serves it within seconds; your
+      proxy auto-fetches on its next 24-hour cycle.</li>
+</ol>
+
+<p>You can verify the resulting bundle locally with:</p>
+<pre>excalibur-ctl license verify ./bundle.json</pre>
+
+<script>
+(function () {
+  var qs = new URLSearchParams(location.search);
+  var token = qs.get('token');
+  var st = document.getElementById('status');
+  var btn = document.getElementById('go');
+
+  if (!token) {
+    st.className = 'err';
+    st.textContent = 'No marketplace token in URL. Did you arrive here directly from the Azure Marketplace?';
+    return;
+  }
+  st.className = 'pending';
+  st.textContent = 'Token received. Click "Activate subscription" to begin fulfillment.';
+  btn.disabled = false;
+
+  btn.addEventListener('click', function () {
+    btn.disabled = true;
+    st.className = 'pending';
+    st.textContent = 'Dispatching fulfillment workflow…';
+
+    // The dispatch endpoint is a thin Cloudflare-Worker-free proxy
+    // hosted as a GitHub Actions workflow trigger. The PAT is rotated
+    // weekly and scoped to repository_dispatch only on this single
+    // repo. See workflows/azure-fulfill.yml for the receiving end.
+    fetch('https://api.github.com/repos/excalibur-enterprise/proxy_control_plane/dispatches', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'Authorization': 'token ' + window.__DISPATCH_PAT__,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        event_type: 'azure-fulfill',
+        client_payload: { token: token, source: 'landing-page', ua: navigator.userAgent }
+      })
+    }).then(function (r) {
+      if (r.status === 204) {
+        st.className = 'ok';
+        st.innerHTML = 'Fulfillment dispatched! Check your email in ~5 minutes for the download link. ' +
+                       'You can close this tab.';
+      } else {
+        st.className = 'err';
+        st.textContent = 'Dispatch failed (HTTP ' + r.status + '). Please contact support@excalibur.dev with this token: ' + token;
+        btn.disabled = false;
+      }
+    }).catch(function (e) {
+      st.className = 'err';
+      st.textContent = 'Network error: ' + e.message;
+      btn.disabled = false;
+    });
+  });
+})();
+</script>
+</body>
+</html>

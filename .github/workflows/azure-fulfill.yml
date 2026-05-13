@@ -1,0 +1,110 @@
+name: azure-fulfill
+
+# Triggered by the public landing page (pages/landing.html) when a
+# customer completes a marketplace purchase. The payload carries the
+# one-time SaaS Fulfillment v2 token; this workflow resolves it,
+# activates the subscription, signs a license bundle with the
+# operational private key (held in the `signing` Encrypted Environment),
+# and commits the result to bundles/<opaque-id>.json so the static
+# entitlements endpoint immediately serves it.
+#
+# Security posture:
+#   - `signing` environment requires a manual reviewer for every run.
+#   - The operational private key is a GitHub Encrypted Secret named
+#     OPS_PRIV_KEY_B64 (raw 64-byte ed25519 key, base64-std).
+#   - The job runs on `ubuntu-latest` with `permissions: contents: write`
+#     scoped only to this single workflow.
+#   - We pin every action to a SHA, never a tag.
+
+on:
+  repository_dispatch:
+    types: [azure-fulfill]
+  workflow_dispatch:
+    inputs:
+      token:
+        description: "Marketplace SaaS purchase token"
+        required: true
+      plan_override:
+        description: "Force this plan_id (debug / re-issue path)"
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: azure-fulfill-${{ github.event.client_payload.token || inputs.token }}
+  cancel-in-progress: false
+
+jobs:
+  fulfill-and-sign:
+    runs-on: ubuntu-latest
+    environment: signing
+    timeout-minutes: 5
+    steps:
+      - name: Checkout control-plane
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Checkout proxy (for cmd/fulfill-azure)
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          repository: excalibur-enterprise/proxy
+          path: proxy
+          ref: main
+
+      - name: Set up Go
+        uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7 # v5.0.1
+        with:
+          go-version-file: proxy/go.mod
+          cache-dependency-path: proxy/go.sum
+
+      - name: Build fulfill-azure
+        working-directory: proxy
+        run: go build -o ../fulfill-azure ./cmd/fulfill-azure
+
+      - name: Materialize signing material
+        env:
+          OPS_PRIV_KEY_B64: ${{ secrets.OPS_PRIV_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$OPS_PRIV_KEY_B64" > op.priv
+          cp pages/signing-keys/operational-cert.json op.cert.json
+          # operational-cert.json is { "token": "<jws>" }; extract.
+          jq -r '.token' op.cert.json > op.cert
+          test -s op.cert
+
+      - name: Resolve, activate, sign
+        id: sign
+        env:
+          TOKEN: ${{ github.event.client_payload.token || inputs.token }}
+        run: |
+          set -euo pipefail
+          ./fulfill-azure \
+            --token "$TOKEN" \
+            --op-priv op.priv \
+            --op-cert op.cert \
+            --plans proxy/deploy/azure/marketplace/plans.json \
+            --validity-days 90 \
+            --grace-days 14 \
+            --out bundle.json
+          # Extract opaque per-tenant id from the signed claims (sub).
+          SUB=$(jq -r '.license' bundle.json | cut -d. -f1 | base64 -d 2>/dev/null | jq -r .sub)
+          test -n "$SUB" && test "$SUB" != "null"
+          echo "sub=$SUB" >> "$GITHUB_OUTPUT"
+          mkdir -p bundles
+          mv bundle.json "bundles/${SUB}.json"
+
+      - name: Wipe signing material
+        if: always()
+        run: shred -u op.priv op.cert op.cert.json 2>/dev/null || rm -f op.priv op.cert op.cert.json
+
+      - name: Commit and push
+        env:
+          SUB: ${{ steps.sign.outputs.sub }}
+        run: |
+          set -euo pipefail
+          git config user.name  "excalibur-fulfillment[bot]"
+          git config user.email "fulfillment@excalibur.dev"
+          git add "bundles/${SUB}.json"
+          git commit -m "fulfill: issue license for ${SUB}"
+          git push
