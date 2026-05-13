@@ -12,6 +12,7 @@ on:
       - pages/**
       - bundles/**
       - entitlements/**
+      - receipts/**
   workflow_dispatch:
 
 permissions:
@@ -38,6 +39,9 @@ jobs:
           fi
           if [[ -d entitlements ]]; then
             cp -r entitlements _site/
+          fi
+          if [[ -d receipts ]]; then
+            cp -r receipts _site/
           fi
           # Custom domain (CNAME) intentionally not written: site is
           # served at the default https://<org>.github.io/<repo>/ URL.
