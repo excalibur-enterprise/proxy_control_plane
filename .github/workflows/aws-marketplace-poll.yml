@@ -13,8 +13,11 @@ name: aws-marketplace-poll
 # No long-lived AWS keys.
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
+  # Cron disabled until OPS_PRIV_KEY_B64, AWS_FULFILL_ROLE_ARN, the
+  # signing environment, and the proxy source repo are all configured.
+  # Re-enable by uncommenting the schedule block.
+  # schedule:
+  #   - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:

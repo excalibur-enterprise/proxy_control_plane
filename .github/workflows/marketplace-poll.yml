@@ -10,8 +10,11 @@ name: marketplace-poll
 # decides; the signing step is delegated.
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
+  # Cron disabled until OPS_PRIV_KEY_B64, the signing environment, the
+  # Azure marketplace credentials, and the proxy source repo are all
+  # configured. Re-enable by uncommenting the schedule block.
+  # schedule:
+  #   - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
