@@ -39,8 +39,8 @@ jobs:
           if [[ -d entitlements ]]; then
             cp -r entitlements _site/
           fi
-          # CNAME file for custom domain.
-          echo "excalibur.dev" > _site/CNAME
+          # Custom domain (CNAME) intentionally not written: site is
+          # served at the default https://<org>.github.io/<repo>/ URL.
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with: { path: _site }
 
