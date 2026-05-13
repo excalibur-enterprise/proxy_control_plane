@@ -1,0 +1,32 @@
+name: sync-install-templates
+# Uploads install/aws/*.yaml to s3://excalibur-marketplace-templates/
+# so CloudFormation Quick-Create URLs work (requires S3 URL scheme).
+
+on:
+  push:
+    branches: [main]
+    paths: [install/**]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::311141537062:role/excalibur-fulfillment-signing
+          aws-region: us-east-1
+
+      - name: Sync templates to S3
+        run: |
+          aws s3 sync install/ s3://excalibur-marketplace-templates/ \
+            --delete \
+            --content-type "application/x-yaml" \
+            --acl public-read
+          echo "✅ synced install/ → s3://excalibur-marketplace-templates/"
