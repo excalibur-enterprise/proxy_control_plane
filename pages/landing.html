@@ -4,39 +4,55 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Excalibur Proxy — finalize your purchase</title>
+<!--
+  When the dispatcher endpoint is deployed, set its URL here.
+  Until then the page falls back to a manual fulfillment instruction
+  block so customers are never blocked. The endpoint MUST accept a
+  POST with JSON body { cloud, token } and forward it to the matching
+  GitHub Actions workflow via a server-side App-installation token.
+  Putting a PAT in this page is forbidden.
+-->
+<meta name="excalibur-dispatch-endpoint" content="">
 <style>
   body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;max-width:680px;margin:48px auto;padding:0 16px;color:#111;line-height:1.55}
   h1{font-size:28px}
   code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#f3f3f3;padding:1px 4px;border-radius:3px}
-  pre{padding:12px;overflow-x:auto}
+  pre{padding:12px;overflow-x:auto;word-break:break-all;white-space:pre-wrap}
   #status{padding:14px;border-radius:6px;margin:20px 0}
   .ok{background:#e6f7e9;color:#0a5e1e}
   .pending{background:#fff7e0;color:#8a5b00}
   .err{background:#fde8e8;color:#9b1c1c}
+  .info{background:#e7f0fb;color:#0b3a78}
   button{background:#0b69ff;color:#fff;border:0;padding:10px 18px;border-radius:6px;font-weight:600;cursor:pointer}
   button:disabled{opacity:.5;cursor:not-allowed}
+  .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:#222;color:#fff;vertical-align:middle}
+  .badge.aws{background:#ff9900;color:#000}
+  .badge.azure{background:#0078d4}
 </style>
 </head>
 <body>
-<h1>Finalize your Excalibur subscription</h1>
-<p>Click the button below to complete your purchase. We will redeem the
-marketplace token, sign a license bundle, and email you a download link
-within ~5 minutes.</p>
+<h1>Finalize your Excalibur subscription <span id="cloud-badge" class="badge">…</span></h1>
+
+<p id="intro">Click the button below to complete your purchase. We will redeem the marketplace token, sign your license bundle with our offline operational key, and publish it to <code>https://excalibur.dev/</code> within a few minutes.</p>
 
 <button id="go" disabled>Activate subscription</button>
 <div id="status"></div>
 
+<div id="manual" style="display:none">
+  <h2>Manual fulfillment</h2>
+  <p>Our automated dispatcher is not yet wired up for self-service. Please email the token below to <a href="mailto:support@getexcalibur.com">support@getexcalibur.com</a> and we will issue your license bundle within one business day.</p>
+  <p><strong>Marketplace:</strong> <span id="manual-cloud"></span></p>
+  <p><strong>Token:</strong></p>
+  <pre id="manual-token"></pre>
+</div>
+
 <h2>What happens next</h2>
 <ol>
-  <li>This page sends your one-time marketplace token to our GitHub Actions
-      fulfillment workflow via <code>repository_dispatch</code>.</li>
-  <li>The workflow calls Microsoft's SaaS Fulfillment v2 API to resolve and
-      activate your subscription.</li>
-  <li>It signs a license bundle with our offline operational key and
-      commits it to the public <code>excalibur-enterprise/proxy_control_plane</code> repo
-      under <code>bundles/&lt;opaque-id&gt;.json</code>.</li>
-  <li>Our static entitlements endpoint serves it within seconds; your
-      proxy auto-fetches on its next 24-hour cycle.</li>
+  <li>This page hands your one-time marketplace token to a public GitHub Actions fulfillment workflow in
+    <a href="https://github.com/excalibur-enterprise/proxy_control_plane">excalibur-enterprise/proxy_control_plane</a>.</li>
+  <li>The workflow calls your marketplace's own resolution API (AWS Marketplace Metering <code>ResolveCustomer</code>, or Azure SaaS Fulfillment v2) to confirm the purchase.</li>
+  <li>It signs a license bundle with our offline operational key (held only in a manual-reviewer-gated GitHub Environment) and commits the bundle as a public file in the same repo.</li>
+  <li>The bundle is served from <code>https://excalibur.dev/</code> within seconds. Your proxy auto-fetches it on its next refresh cycle.</li>
 </ol>
 
 <p>You can verify the resulting bundle locally with:</p>
@@ -45,52 +61,95 @@ within ~5 minutes.</p>
 <script>
 (function () {
   var qs = new URLSearchParams(location.search);
-  var token = qs.get('token');
   var st = document.getElementById('status');
   var btn = document.getElementById('go');
+  var badge = document.getElementById('cloud-badge');
+  var manual = document.getElementById('manual');
+  var manualCloud = document.getElementById('manual-cloud');
+  var manualToken = document.getElementById('manual-token');
 
-  if (!token) {
+  // Detect which marketplace sent us here.
+  // AWS Marketplace SaaS sends ?x-amzn-marketplace-token=<...>
+  // Azure Marketplace SaaS sends ?token=<...>
+  // The /aws and /azure path prefixes are also accepted as explicit hints.
+  var awsToken = qs.get('x-amzn-marketplace-token');
+  var azureToken = qs.get('token');
+  var pathHint = location.pathname.toLowerCase();
+  var cloud = null;
+  var token = null;
+  if (awsToken || pathHint.indexOf('/aws') !== -1) {
+    cloud = 'aws';
+    token = awsToken || azureToken;
+  } else if (azureToken || pathHint.indexOf('/azure') !== -1) {
+    cloud = 'azure';
+    token = azureToken;
+  }
+
+  if (!token || !cloud) {
+    badge.textContent = 'unknown';
     st.className = 'err';
-    st.textContent = 'No marketplace token in URL. Did you arrive here directly from the Azure Marketplace?';
+    st.textContent = 'No marketplace token in URL. This page is reached automatically after subscribing on AWS Marketplace or Azure Marketplace.';
     return;
   }
+
+  badge.textContent = cloud.toUpperCase();
+  badge.className = 'badge ' + cloud;
+
   st.className = 'pending';
-  st.textContent = 'Token received. Click "Activate subscription" to begin fulfillment.';
+  st.textContent = 'Token received from ' + cloud.toUpperCase() + ' Marketplace. Click "Activate subscription" to begin fulfillment.';
   btn.disabled = false;
+
+  function eventTypeFor(c) { return c === 'aws' ? 'aws-fulfill' : 'azure-fulfill'; }
+  function payloadFor(c, t) {
+    if (c === 'aws') {
+      return { event_type: 'aws-fulfill', client_payload: { token: t, source: 'landing-page', ua: navigator.userAgent } };
+    }
+    return { event_type: 'azure-fulfill', client_payload: { token: t, source: 'landing-page', ua: navigator.userAgent } };
+  }
+
+  function showManual() {
+    btn.style.display = 'none';
+    manual.style.display = 'block';
+    manualCloud.textContent = cloud.toUpperCase() + ' Marketplace';
+    manualToken.textContent = token;
+    st.className = 'info';
+    st.innerHTML = 'Automated fulfillment is not configured for this site yet. Follow the <strong>Manual fulfillment</strong> instructions below.';
+  }
+
+  // Look up dispatcher endpoint from a meta tag. Empty / missing means
+  // the operator has not yet deployed the server-side App dispatcher,
+  // so we fall through to the manual flow.
+  var endpointMeta = document.querySelector('meta[name="excalibur-dispatch-endpoint"]');
+  var endpoint = (endpointMeta && endpointMeta.content || '').trim();
+
+  if (!endpoint) {
+    btn.addEventListener('click', showManual);
+    return;
+  }
 
   btn.addEventListener('click', function () {
     btn.disabled = true;
     st.className = 'pending';
     st.textContent = 'Dispatching fulfillment workflow…';
 
-    // The dispatch endpoint is a thin Cloudflare-Worker-free proxy
-    // hosted as a GitHub Actions workflow trigger. The PAT is rotated
-    // weekly and scoped to repository_dispatch only on this single
-    // repo. See workflows/azure-fulfill.yml for the receiving end.
-    fetch('https://api.github.com/repos/excalibur-enterprise/proxy_control_plane/dispatches', {
+    fetch(endpoint, {
       method: 'POST',
-      headers: {
-        'Accept': 'application/vnd.github+json',
-        'Authorization': 'token ' + window.__DISPATCH_PAT__,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        event_type: 'azure-fulfill',
-        client_payload: { token: token, source: 'landing-page', ua: navigator.userAgent }
-      })
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(payloadFor(cloud, token))
     }).then(function (r) {
-      if (r.status === 204) {
+      if (r.status >= 200 && r.status < 300) {
         st.className = 'ok';
-        st.innerHTML = 'Fulfillment dispatched! Check your email in ~5 minutes for the download link. ' +
-                       'You can close this tab.';
+        st.innerHTML = 'Fulfillment dispatched. Check your inbox in a few minutes for the license bundle URL. You can close this tab.';
       } else {
-        st.className = 'err';
-        st.textContent = 'Dispatch failed (HTTP ' + r.status + '). Please contact support@excalibur.dev with this token: ' + token;
-        btn.disabled = false;
+        return r.text().then(function (body) {
+          st.className = 'err';
+          st.innerHTML = 'Dispatch failed (HTTP ' + r.status + '). Please email <a href="mailto:support@getexcalibur.com">support@getexcalibur.com</a> with this token: <pre>' + token + '</pre><pre>' + (body || '') + '</pre>';
+          btn.disabled = false;
+        });
       }
     }).catch(function (e) {
       st.className = 'err';
-      st.textContent = 'Network error: ' + e.message;
+      st.innerHTML = 'Network error: ' + e.message + '. Please email <a href="mailto:support@getexcalibur.com">support@getexcalibur.com</a> with this token: <pre>' + token + '</pre>';
       btn.disabled = false;
     });
   });

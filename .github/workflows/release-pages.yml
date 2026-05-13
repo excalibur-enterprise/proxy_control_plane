@@ -11,6 +11,7 @@ on:
     paths:
       - pages/**
       - bundles/**
+      - entitlements/**
   workflow_dispatch:
 
 permissions:
@@ -34,6 +35,9 @@ jobs:
           cp -r pages/* _site/
           if [[ -d bundles ]]; then
             cp -r bundles _site/
+          fi
+          if [[ -d entitlements ]]; then
+            cp -r entitlements _site/
           fi
           # CNAME file for custom domain.
           echo "excalibur.dev" > _site/CNAME
