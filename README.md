@@ -1,29 +1,31 @@
-# Excalibur Proxy — Control Plane
+# Excalibur Proxy — Public Control Plane
 
-Public, auditable control plane for [Excalibur Proxy](https://excalibur.dev).
+Public, auditable artifact host for [Excalibur Proxy](https://excalibur-enterprise.github.io/proxy_control_plane/).
 
-This repository hosts:
+This repository hosts only **public, verifiable artifacts**:
 
-- **The marketing and post-purchase pages** served at <https://excalibur.dev> (in [`pages/`](pages/)).
-- **The marketplace fulfillment workflows** that activate AWS and Azure subscriptions, sign per-customer license bundles with our offline operational key, and publish them as static JSON (in [`.github/workflows/`](.github/workflows/)).
-- **The current public verification key** customers and auditors can pin to verify any license bundle Excalibur has ever issued (in [`pages/public-key.pem`](pages/public-key.pem) once published).
+- **Marketing and post-purchase pages** (in [`pages/`](pages/)) served via GitHub Pages.
+- **Signed license bundles** committed by the (private) signing pipeline:
+  - AWS bundles → [`entitlements/`](entitlements/)
+  - Azure bundles → [`bundles/`](bundles/)
+- **The root verification key** customers and auditors can pin to verify any license bundle Excalibur has ever issued (in [`pages/public-key.pem`](pages/public-key.pem) once published).
+- **The active operational certificate(s)** signed by the offline root key (in [`pages/signing-keys/`](pages/signing-keys/)).
 
-Everything in this repo is intentionally public so that customers can verify, byte-for-byte, what is being signed on their behalf and which key is signing it.
+Everything in this repo is intentionally public so that customers can verify, byte-for-byte, what was signed on their behalf and which key signed it.
+
+The signing key, marketplace API credentials, and fulfillment workflows live in a **separate private repository**. That repository commits the resulting signed bundles into this public repo, where they are served as static JSON over HTTPS. Issuance is therefore fully auditable as a public commit history, while the signing material itself never appears here.
 
 ## Why this exists
 
-Excalibur Proxy is self-hosted: every byte of customer traffic stays in the customer's own AWS account. The only thing the proxy ever fetches from us is a small, signed **license bundle** that confirms the customer's entitlement (plan tier, workload limits, expiry).
-
-Rather than run a closed-source license server, we run the entire issuance path in this public repo:
+Excalibur Proxy is self-hosted: every byte of customer traffic stays in the customer's own AWS or Azure account. The only thing the proxy ever fetches from us is a small, signed **license bundle** that confirms the customer's entitlement (plan tier, workload limits, expiry).
 
 1. Customer subscribes on AWS or Azure Marketplace.
-2. Marketplace redirects them to a static page in [`pages/`](pages/).
-3. That page hands the marketplace token to a GitHub Actions workflow in this repo via `repository_dispatch`.
-4. The workflow calls the marketplace's own resolution API to confirm the purchase.
-5. It signs a license bundle with the offline operational key and commits the bundle to this repo.
-6. The customer's proxy fetches the bundle from `https://excalibur.dev/...` on its normal refresh cycle.
+2. Marketplace redirects them to [`pages/landing.html`](pages/landing.html) served from this repo.
+3. The token is forwarded to the private signing pipeline.
+4. The signing pipeline calls the marketplace's own resolution API to confirm the purchase, signs a license bundle with the offline operational key, and commits the bundle into this public repo.
+5. The customer's proxy fetches the bundle from the public Pages URL on its normal refresh cycle.
 
-Every signing run is a public Actions log. Every issued bundle is a public commit. Every key rotation is a public commit. There is no hidden state.
+Every issued bundle is a public commit. Every key rotation is a public commit. There is no hidden state.
 
 ## Verifying a license bundle
 
@@ -37,26 +39,23 @@ Wire format and signature scheme: [`pages/license-format.md`](pages/license-form
 
 ## Layout
 
-| Path                                           | Purpose                                                            |
-| ---------------------------------------------- | ------------------------------------------------------------------ |
-| `pages/index.html`                             | Marketing front page served at <https://excalibur.dev>.            |
-| `pages/landing.html`                           | Marketplace post-purchase landing page.                            |
-| `pages/license-format.md`                      | License bundle wire format.                                        |
-| `pages/public-key.pem`                         | Long-lived root verification key (PKIX SPKI PEM).                  |
-| `pages/signing-keys/`                          | Active operational certificate(s).                                 |
-| `.github/workflows/aws-fulfill.yml`            | AWS Marketplace SaaS fulfillment.                                  |
-| `.github/workflows/azure-fulfill.yml`          | Azure Marketplace SaaS fulfillment.                                |
-| `.github/workflows/aws-marketplace-poll.yml`   | AWS entitlement reconciliation (suspend / reissue).                |
-| `.github/workflows/marketplace-poll.yml`       | Azure entitlement reconciliation.                                  |
-| `.github/workflows/release-pages.yml`          | Publishes `pages/` to GitHub Pages.                                |
-| `scripts/refresh-public-key.sh`                | Regenerates `pages/public-key.pem` from the embedded root constant.|
+| Path                                  | Purpose                                                              |
+| ------------------------------------- | -------------------------------------------------------------------- |
+| `pages/index.html`                    | Marketing front page.                                                |
+| `pages/landing.html`                  | Marketplace post-purchase landing page (AWS + Azure).                |
+| `pages/license-format.md`             | License bundle wire format.                                          |
+| `pages/public-key.pem`                | Long-lived root verification key (PKIX SPKI PEM).                    |
+| `pages/signing-keys/`                 | Active operational certificate(s).                                   |
+| `entitlements/`                       | Signed per-customer license bundles for AWS Marketplace.             |
+| `bundles/`                            | Signed per-customer license bundles for Azure Marketplace.           |
+| `.github/workflows/release-pages.yml` | Publishes `pages/`, `entitlements/`, and `bundles/` to GitHub Pages. |
 
 ## Security model
 
 - The **root signing key** never leaves an offline machine. Its public half is embedded in every `excalibur-ctl` binary and mirrored in `pages/public-key.pem`.
-- The **operational signing key** lives only as an [encrypted GitHub Environment Secret](https://docs.github.com/actions/security-guides/using-secrets-in-github-actions) on the `signing` environment, which requires a manual reviewer for every workflow run.
-- All `main`-branch commits are signed and reviewed.
-- Workflows trigger only on `repository_dispatch` (from the public landing page) or `workflow_dispatch` (from a maintainer). `pull_request_target` is forbidden.
+- The **operational signing key** does **not** live in this repo. It lives only in the private signing repository as an encrypted GitHub Environment Secret on a `signing` environment that requires a manual reviewer for every workflow run.
+- All `main`-branch commits are signed.
+- This repo has no workflow that consumes secrets and no `repository_dispatch` trigger. The only workflow is the static Pages publisher.
 
 ## Reporting a vulnerability
 
